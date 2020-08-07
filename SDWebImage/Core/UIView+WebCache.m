@@ -53,12 +53,15 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
                      setImageBlock:(nullable SDSetImageBlock)setImageBlock
                           progress:(nullable SDImageLoaderProgressBlock)progressBlock
                          completed:(nullable SDInternalCompletionBlock)completedBlock {
+    // 内容设置
     if (context) {
         // copy to avoid mutable object
         context = [context copy];
     } else {
         context = [NSDictionary dictionary];
     }
+    
+    // 当前操作对象
     NSString *validOperationKey = context[SDWebImageContextSetImageOperationKey];
     if (!validOperationKey) {
         // pass through the operation key to downstream, which can used for tracing operation or image view class
@@ -68,16 +71,26 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
         context = [mutableContext copy];
     }
     self.sd_latestOperationKey = validOperationKey;
+    
+    // 取消当前操作任务
     [self sd_cancelImageLoadOperationWithKey:validOperationKey];
+    
     self.sd_imageURL = url;
     
+    // 设置占位图
+    // 不需要延时，立即展示占位图
     if (!(options & SDWebImageDelayPlaceholder)) {
         dispatch_main_async_safe(^{
+            
+            // 设置图片 占位图
             [self sd_setImage:placeholder imageData:nil basedOnClassOrViaCustomSetImageBlock:setImageBlock cacheType:SDImageCacheTypeNone imageURL:url];
         });
     }
     
+    // 链接有效
     if (url) {
+        
+        // 获取进度条，并重置
         // reset the progress
         NSProgress *imageProgress = objc_getAssociatedObject(self, @selector(sd_imageProgress));
         if (imageProgress) {
@@ -86,25 +99,32 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
         }
         
 #if SD_UIKIT || SD_MAC
+        // 指示器
         // check and start image indicator
         [self sd_startImageIndicator];
         id<SDWebImageIndicator> imageIndicator = self.sd_imageIndicator;
 #endif
+        // 图片管理者 来自 内容设置
         SDWebImageManager *manager = context[SDWebImageContextCustomManager];
         if (!manager) {
             manager = [SDWebImageManager sharedManager];
         } else {
+            
+            // 避免循环引用
             // remove this manager to avoid retain cycle (manger -> loader -> operation -> context -> manager)
             SDWebImageMutableContext *mutableContext = [context mutableCopy];
             mutableContext[SDWebImageContextCustomManager] = nil;
             context = [mutableContext copy];
         }
         
+        // 进度条回调
         SDImageLoaderProgressBlock combinedProgressBlock = ^(NSInteger receivedSize, NSInteger expectedSize, NSURL * _Nullable targetURL) {
+            
             if (imageProgress) {
                 imageProgress.totalUnitCount = expectedSize;
                 imageProgress.completedUnitCount = receivedSize;
             }
+            
 #if SD_UIKIT || SD_MAC
             if ([imageIndicator respondsToSelector:@selector(updateIndicatorProgress:)]) {
                 double progress = 0;
@@ -121,14 +141,18 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
                 progressBlock(receivedSize, expectedSize, targetURL);
             }
         };
+        
         @weakify(self);
+        // 加载图片对象 图片链接，选项，内容设置，进度条回调，回调返回图片等信息
         id <SDWebImageOperation> operation = [manager loadImageWithURL:url options:options context:context progress:combinedProgressBlock completed:^(UIImage *image, NSData *data, NSError *error, SDImageCacheType cacheType, BOOL finished, NSURL *imageURL) {
+            
             @strongify(self);
             if (!self) { return; }
+            
             // if the progress not been updated, mark it to complete state
             if (imageProgress && finished && !error && imageProgress.totalUnitCount == 0 && imageProgress.completedUnitCount == 0) {
-                imageProgress.totalUnitCount = SDWebImageProgressUnitCountUnknown;
-                imageProgress.completedUnitCount = SDWebImageProgressUnitCountUnknown;
+                imageProgress.totalUnitCount = SDWebImageProgressUnitCountUnknown;// 1LL
+                imageProgress.completedUnitCount = SDWebImageProgressUnitCountUnknown;// 1LL
             }
             
 #if SD_UIKIT || SD_MAC
@@ -138,19 +162,31 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
             }
 #endif
             
+            // 不自动设置图片，手动回调设置图片
             BOOL shouldCallCompletedBlock = finished || (options & SDWebImageAvoidAutoSetImage);
+            // 是否不设置图片 =（图片存在 && （手动回调设置图片））|| （图片不存在 && 不延迟设置占位图）
             BOOL shouldNotSetImage = ((image && (options & SDWebImageAvoidAutoSetImage)) ||
                                       (!image && !(options & SDWebImageDelayPlaceholder)));
+            
+            // 终止
             SDWebImageNoParamsBlock callCompletedBlockClojure = ^{
+                
                 if (!self) { return; }
+                
+                // 设置图片
                 if (!shouldNotSetImage) {
                     [self sd_setNeedsLayout];
                 }
+                
+                // 回调，手动回调设置图片
                 if (completedBlock && shouldCallCompletedBlock) {
                     completedBlock(image, data, error, cacheType, finished, url);
                 }
+                
             };
             
+            // 不设置图片，回调处理，设置图片
+            // （图片存在 && （手动回调设置图片））|| （图片不存在 && 不延迟设置占位图）
             // case 1a: we got an image, but the SDWebImageAvoidAutoSetImage flag is set
             // OR
             // case 1b: we got no image and the SDWebImageDelayPlaceholder is not set
@@ -159,40 +195,59 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
                 return;
             }
             
+            // 设置图片
             UIImage *targetImage = nil;
             NSData *targetData = nil;
             if (image) {
+                
+                // 图片存在 && 设置图片
                 // case 2a: we got an image and the SDWebImageAvoidAutoSetImage is not set
                 targetImage = image;
                 targetData = data;
             } else if (options & SDWebImageDelayPlaceholder) {
+                
+                // 图片不存在 && 延迟设置占位图
                 // case 2b: we got no image and the SDWebImageDelayPlaceholder flag is set
                 targetImage = placeholder;
                 targetData = nil;
             }
             
 #if SD_UIKIT || SD_MAC
+            
+            // 是否需要过渡动画
             // check whether we should use the image transition
             SDWebImageTransition *transition = nil;
             if (finished && (options & SDWebImageForceTransition || cacheType == SDImageCacheTypeNone)) {
                 transition = self.sd_imageTransition;
             }
 #endif
+            // 主线程 设置图片
             dispatch_main_async_safe(^{
+
 #if SD_UIKIT || SD_MAC
                 [self sd_setImage:targetImage imageData:targetData basedOnClassOrViaCustomSetImageBlock:setImageBlock transition:transition cacheType:cacheType imageURL:imageURL];
 #else
                 [self sd_setImage:targetImage imageData:targetData basedOnClassOrViaCustomSetImageBlock:setImageBlock cacheType:cacheType imageURL:imageURL];
 #endif
+                // 终止
                 callCompletedBlockClojure();
+                
             });
         }];
+        // 加载图片 = 缓存（memory/disk）/ 下载（下载/系统Photos图片库）
         [self sd_setImageLoadOperation:operation forKey:validOperationKey];
-    } else {
+        
+    }
+    else {
+        
+        // 图片链接不存在
 #if SD_UIKIT || SD_MAC
+        // 停止指示器
         [self sd_stopImageIndicator];
 #endif
         dispatch_main_async_safe(^{
+            
+            // 回调错误信息 链接空
             if (completedBlock) {
                 NSError *error = [NSError errorWithDomain:SDWebImageErrorDomain code:SDWebImageErrorInvalidURL userInfo:@{NSLocalizedDescriptionKey : @"Image url is nil"}];
                 completedBlock(nil, nil, error, SDImageCacheTypeNone, YES, url);
@@ -205,7 +260,9 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
     [self sd_cancelImageLoadOperationWithKey:self.sd_latestOperationKey];
 }
 
+// 设置图片
 - (void)sd_setImage:(UIImage *)image imageData:(NSData *)imageData basedOnClassOrViaCustomSetImageBlock:(SDSetImageBlock)setImageBlock cacheType:(SDImageCacheType)cacheType imageURL:(NSURL *)imageURL {
+    
 #if SD_UIKIT || SD_MAC
     [self sd_setImage:image imageData:imageData basedOnClassOrViaCustomSetImageBlock:setImageBlock transition:nil cacheType:cacheType imageURL:imageURL];
 #else
@@ -217,10 +274,12 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
         [imageView setImage:image];
     }
 #endif
+    
 }
 
 #if SD_UIKIT || SD_MAC
 - (void)sd_setImage:(UIImage *)image imageData:(NSData *)imageData basedOnClassOrViaCustomSetImageBlock:(SDSetImageBlock)setImageBlock transition:(SDWebImageTransition *)transition cacheType:(SDImageCacheType)cacheType imageURL:(NSURL *)imageURL {
+    
     UIView *view = self;
     SDSetImageBlock finalSetImageBlock;
     if (setImageBlock) {
@@ -231,6 +290,7 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
             imageView.image = setImage;
         };
     }
+    
 #if SD_UIKIT
     else if ([view isKindOfClass:[UIButton class]]) {
         UIButton *button = (UIButton *)view;
@@ -239,8 +299,9 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
         };
     }
 #endif
+    
 #if SD_MAC
-    else if ([view isKindOfClass:[NSButton class]]) {
+    else if ([view isKindOfClass:[NSButton class]]) {// MACOS 按钮 NSButton
         NSButton *button = (NSButton *)view;
         finalSetImageBlock = ^(UIImage *setImage, NSData *setImageData, SDImageCacheType setCacheType, NSURL *setImageURL) {
             button.image = setImage;
@@ -248,6 +309,7 @@ const int64_t SDWebImageProgressUnitCountUnknown = 1LL;
     }
 #endif
     
+    // 过度动画
     if (transition) {
 #if SD_UIKIT
         [UIView transitionWithView:view duration:0 options:0 animations:^{
